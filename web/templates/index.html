@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gormint Exam Image Editor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='interaction.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='comparison.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='result-layout.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead"><div class="brand-wordmark"><p class="eyebrow">LOCAL IMAGE WORKBENCH</p><h1><span class="brand-highlight">Gormint</span> <span class="brand-rest">Exam Image Editor</span></h1></div><span class="status-dot">On-device</span></header>
+    {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
+    <form class="workspace" action="{{ url_for('process') }}" method="post" enctype="multipart/form-data">
+      <section class="dropzone" id="dropzone">
+        <div class="original-heading"><p class="eyebrow">00 / IMPORT</p><h2>Original image</h2></div>
+        <input id="image" name="image" type="file" accept="image/*" required>
+        <label for="image" class="drop-content"><span class="upload-icon">+</span><strong id="file-label">Drop an image here</strong><span>or choose a JPG, PNG, WEBP, BMP, or TIFF</span></label>
+        <div class="original-view"><span class="view-label">Original</span><img id="preview" alt="Original image preview"></div>
+        <button class="reset-image" id="reset-image" type="button" aria-label="Remove selected image" title="Remove selected image">×</button>
+      </section>
+      <aside class="controls"><div class="section-heading"><p class="eyebrow">01 / PREPARE</p><h2>Output settings</h2></div>
+        <fieldset><legend>Document type</legend><div class="segmented">{% for value, label in [('photo','Photo'),('signature','Signature'),('thumb','Thumb'),('declaration','Declaration')] %}<label><input type="radio" name="document_type" value="{{ value }}" {% if value == 'photo' %}checked{% endif %}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>
+        <div class="field-grid"><label>Width<input name="width" type="number" min="1" placeholder="Original"></label><label>Height<input name="height" type="number" min="1" placeholder="Original"></label></div>
+        <div class="field-grid"><label>Resize mode<select name="resize_mode"><option value="auto">Automatic</option><option value="fit">Fit + white padding</option><option value="crop">Crop to fill</option></select></label><label>Background<select name="background"><option value="white">White</option><option value="transparent">Transparent</option></select></label></div>
+        <div class="field-grid"><label>Format<select name="image_format"><option value="png">PNG / lossless</option><option value="jpeg">JPEG / compatible</option></select></label><label>Max KB<input name="max_kb" type="number" min="1" placeholder="Optional"></label></div>
+        <div class="field-grid"><label>Min KB<input name="min_kb" type="number" min="0" placeholder="Optional"></label><label class="check-label"><input name="sharpen" type="checkbox"> Gentle sharpening</label></div>
+        <button class="process-button" id="process-button" type="submit"><span id="process-label">Process image</span><span aria-hidden="true">→</span></button>
+        <section class="progress-panel" id="progress-panel" aria-live="polite" hidden>
+          <div class="progress-heading"><strong id="progress-label">Preparing image</strong><span id="progress-value"></span></div>
+          <div class="progress-track" id="progress-track" role="progressbar" aria-label="Image upload and processing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-fill" id="progress-fill"></div></div>
+          <p class="progress-detail" id="progress-detail"></p>
+        </section>
+        <p class="privacy-note">Your image stays on this computer. RMBG-2.0 loads before the web app is ready.</p>
+      </aside>
+      <section class="result-panel" id="result-panel" aria-live="polite">
+        <div class="result-heading"><p class="eyebrow">02 / RESULT</p><h2>Processed image</h2></div>
+        <div class="result-canvas">
+          <p class="result-empty" id="result-empty">The processed image will appear here.</p>
+          <img id="processed-preview" alt="Processed image preview" hidden>
+        </div>
+        <div class="save-row" id="save-row" hidden>
+          <button class="save-button" id="save-image" type="button" disabled><span aria-hidden="true">↓</span> Save processed image</button>
+          <span class="save-status" id="save-status" aria-live="polite"></span>
+        </div>
+      </section>
+    </form>
+  </main>
+  <script>
+    const form = document.querySelector('.workspace');
+    const input = document.querySelector('#image');
+    const dropzone = document.querySelector('#dropzone');
+    const preview = document.querySelector('#preview');
+    const processedPreview = document.querySelector('#processed-preview');
+    const resultPanel = document.querySelector('#result-panel');
+    const resultEmpty = document.querySelector('#result-empty');
+    const saveRow = document.querySelector('#save-row');
+    const saveButton = document.querySelector('#save-image');
+    const saveStatus = document.querySelector('#save-status');
+    const fileLabel = document.querySelector('#file-label');
+    const resetButton = document.querySelector('#reset-image');
+    const processButton = document.querySelector('#process-button');
+    const processLabel = document.querySelector('#process-label');
+    const progressPanel = document.querySelector('#progress-panel');
+    const progressTrack = document.querySelector('#progress-track');
+    const progressFill = document.querySelector('#progress-fill');
+    const progressLabel = document.querySelector('#progress-label');
+    const progressValue = document.querySelector('#progress-value');
+    const progressDetail = document.querySelector('#progress-detail');
+    let previewUrl = null;
+    let processedUrl = null;
+    let processedBlob = null;
+    let processedFilename = 'upload-ready.png';
+    let isProcessing = false;
+
+    function showProgress({ label, detail = '', percent = null, state = 'working' }) {
+      progressPanel.hidden = false;
+      progressPanel.dataset.state = state;
+      progressLabel.textContent = label;
+      progressDetail.textContent = detail;
+      progressValue.textContent = percent === null ? (state === 'working' ? 'In progress' : '') : `${percent}%`;
+      progressTrack.setAttribute('aria-valuetext', percent === null ? label : `${percent}%: ${label}`);
+      if (percent === null) {
+        progressTrack.removeAttribute('aria-valuenow');
+        progressFill.classList.add('is-indeterminate');
+      } else {
+        progressTrack.setAttribute('aria-valuenow', String(percent));
+        progressFill.classList.remove('is-indeterminate');
+        progressFill.style.width = `${percent}%`;
+      }
+    }
+
+    function setBusy(busy) {
+      isProcessing = busy;
+      processButton.disabled = busy;
+      resetButton.disabled = busy;
+      saveButton.disabled = busy || !processedBlob;
+      processLabel.textContent = busy ? 'Processing…' : 'Process image';
+    }
+
+    function clearProcessedImage() {
+      if (processedUrl) URL.revokeObjectURL(processedUrl);
+      processedUrl = null;
+      processedBlob = null;
+      processedPreview.removeAttribute('src');
+      processedPreview.hidden = true;
+      resultEmpty.hidden = false;
+      saveRow.hidden = true;
+      saveButton.disabled = true;
+      saveStatus.textContent = '';
+      resultPanel.classList.remove('has-result');
+    }
+
+    function resetImage() {
+      if (isProcessing) return;
+      input.value = '';
+      preview.removeAttribute('src');
+      dropzone.classList.remove('has-preview');
+      fileLabel.textContent = 'Drop an image here';
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = null;
+      clearProcessedImage();
+      progressPanel.hidden = true;
+    }
+
+    input.addEventListener('change', () => {
+      const file = input.files[0];
+      if (!file) return;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      clearProcessedImage();
+      previewUrl = URL.createObjectURL(file);
+      fileLabel.textContent = file.name;
+      preview.src = previewUrl;
+      dropzone.classList.add('has-preview');
+      progressPanel.hidden = true;
+    });
+
+    saveButton.addEventListener('click', async () => {
+      if (!processedBlob || isProcessing) return;
+      saveButton.disabled = true;
+      try {
+        if (window.showSaveFilePicker) {
+          const extension = processedFilename.toLowerCase().endsWith('.jpg') ? '.jpg' : '.png';
+          const mime = extension === '.jpg' ? 'image/jpeg' : 'image/png';
+          const fileHandle = await window.showSaveFilePicker({
+            suggestedName: processedFilename,
+            types: [{ description: extension === '.jpg' ? 'JPEG image' : 'PNG image', accept: { [mime]: [extension] } }]
+          });
+          const writable = await fileHandle.createWritable();
+          await writable.write(processedBlob);
+          await writable.close();
+          saveStatus.textContent = `Saved as ${fileHandle.name}`;
+        } else {
+          const link = document.createElement('a');
+          link.href = processedUrl;
+          link.download = processedFilename;
+          document.body.append(link);
+          link.click();
+          link.remove();
+          saveStatus.textContent = 'Saved through your browser download settings.';
+        }
+      } catch (error) {
+        if (error.name !== 'AbortError') saveStatus.textContent = 'Could not save the image. Please try again.';
+      } finally {
+        saveButton.disabled = !processedBlob;
+      }
+    });
+
+    resetButton.addEventListener('click', resetImage);
+    ['dragenter', 'dragover'].forEach(event => dropzone.addEventListener(event, eventObject => {
+      eventObject.preventDefault();
+      dropzone.classList.add('dragging');
+    }));
+    ['dragleave', 'drop'].forEach(event => dropzone.addEventListener(event, eventObject => {
+      eventObject.preventDefault();
+      dropzone.classList.remove('dragging');
+    }));
+    dropzone.addEventListener('drop', eventObject => {
+      if (!eventObject.dataTransfer.files.length || isProcessing) return;
+      input.files = eventObject.dataTransfer.files;
+      input.dispatchEvent(new Event('change'));
+    });
+
+    form.addEventListener('submit', eventObject => {
+      eventObject.preventDefault();
+      if (isProcessing || !input.files.length) {
+        input.reportValidity();
+        return;
+      }
+      const formData = new FormData(form);
+      const xhr = new XMLHttpRequest();
+      clearProcessedImage();
+      setBusy(true);
+      showProgress({ label: 'Uploading image', detail: 'Sending the image to the local processor.', percent: 0 });
+      xhr.open('POST', form.action);
+      xhr.responseType = 'blob';
+      xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+      xhr.upload.addEventListener('progress', eventProgress => {
+        if (!eventProgress.lengthComputable) return;
+        const percent = Math.round((eventProgress.loaded / eventProgress.total) * 100);
+        showProgress({ label: 'Uploading image', detail: 'Sending the image to the local processor.', percent });
+      });
+      xhr.upload.addEventListener('load', () => {
+        showProgress({ label: 'Removing background', detail: 'The local AI model is processing the image. This stage does not report fractional progress.' });
+      });
+      xhr.addEventListener('load', async () => {
+        const contentType = xhr.getResponseHeader('Content-Type') || '';
+        if (xhr.status >= 200 && xhr.status < 300 && contentType.startsWith('image/')) {
+          processedBlob = xhr.response;
+          processedFilename = xhr.getResponseHeader('X-Export-Filename') || 'upload-ready.png';
+          processedUrl = URL.createObjectURL(processedBlob);
+          processedPreview.src = processedUrl;
+          processedPreview.hidden = false;
+          resultEmpty.hidden = true;
+          saveRow.hidden = false;
+          saveButton.disabled = false;
+          resultPanel.classList.add('has-result');
+          const size = xhr.getResponseHeader('X-Export-Size-KB');
+          const warnings = xhr.getResponseHeader('X-Export-Warnings');
+          showProgress({ label: 'Preview ready', detail: `${size ? `${size} KB. ` : ''}${warnings || 'Review the result, then save it when ready.'}`, percent: 100, state: warnings ? 'warning' : 'success' });
+        } else {
+          let message = 'Processing failed. Check the image and settings, then try again.';
+          try {
+            const body = JSON.parse(await xhr.response.text());
+            message = body.error || message;
+          } catch {}
+          showProgress({ label: 'Could not process image', detail: message, percent: 0, state: 'error' });
+        }
+        setBusy(false);
+      });
+      xhr.addEventListener('error', () => {
+        showProgress({ label: 'Connection failed', detail: 'Could not reach the local image processor. Check that the app is running.', percent: 0, state: 'error' });
+        setBusy(false);
+      });
+      xhr.send(formData);
+    });
+  </script>
+</body>
+</html>

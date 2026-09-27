@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-image-editor"
+version = "0.1.0"
+description = "Local RMBG-2.0 background removal and exam-image preparation"
+requires-python = ">=3.10"
+dependencies = [
+    "Flask",
+    "Pillow",
+    "huggingface-hub",
+    "kornia",
+    "timm",
+    "torch",
+    "torchvision",
+    "transformers",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+image_editor = []
+
+[project.scripts]
+image-editor = "image_editor.interfaces.cli:run"
